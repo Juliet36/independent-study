@@ -35,9 +35,10 @@
   </head>
   <body>
     <div id="editor">function foo(items) {
-      var x = "All this is syntax highlighted";
-      return x;
-    }</div>
+      var answer = items + 3;
+      return answer;
+}
+foo(4);</div>
 
     <div class ="test" id='run'>Run</div>
     <div class ="test" id='step'>Highlight Step</div>
@@ -55,15 +56,6 @@
 
       const stepButton = document.querySelector('.test#step');
       stepButton.addEventListener('click', function() {
-      //  const cd = editor.getValue();
-      //  const parsedCode = esprima.parse(cd, {loc:true});
-        ////const result = highlight(parsedCode.body);
-        //console.log(JSON.stringify(result));
-
-
-      //  const code = editor.getValue();
-      //  const tokens = esprima.tokenize(code, {loc: true});
-      //  const tokensPos = tokens.map(x => x.loc);
         if (!G.highlighting) {
           G.highlighting = true;
           G.tPos = 0;
@@ -73,22 +65,12 @@
           G.tokensRanges.length = 0;
           G.tokens = esprima.tokenize(cd, {loc: true});
           eval(parsedCode.body, true);
-        //  console.log(JSON.stringify(G.tokensRanges));
         } else {
           G.tPos += 1;
         }
         if (!G.tokensRanges[G.tPos]) {
           G.highlighting = false;
         } else {
-          // var startLine = G.tokensRanges[G.tPos].start.line-1;
-          // var startCol = G.tokensRanges[G.tPos].start.column;
-          // var endLine = G.tokensRanges[G.tPos].end.line-1;
-          // var endCol = G.tokensRanges[G.tPos].end.column;
-          // var range = {start: {row: startLine,
-          //                      column: startCol},
-          //              end: {row: endLine,
-          //                    column:endCol}
-          //             };
           editor.selection.setRange(G.tokensRanges[G.tPos]);
         }
       });
