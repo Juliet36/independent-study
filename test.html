@@ -53,7 +53,7 @@ foo(6);</div>
       editor.getSession().setMode("ace/mode/javascript");
       editor.$blockScrolling = Infinity;
 
-
+      //make it work with the new stuff
       const stepButton = document.querySelector('.test#step');
       stepButton.addEventListener('click', function() {
         if (!G.highlighting) {
@@ -75,6 +75,7 @@ foo(6);</div>
         }
       });
 
+      //This will run when the text in the ACE editor is changed
       editor.getSession().on('change', function(e) {
         G.highlighting = false;
       });
@@ -83,7 +84,8 @@ foo(6);</div>
       button.addEventListener('click', function () {
         const code = editor.getValue();
         const parsedCode = esprima.parse(code);
-        const result = eval(parsedCode.body);
+        reset();
+        const result = start(parsedCode.body);
         console.log("Result " + JSON.stringify(result));
         console.log("World " + JSON.stringify(G.symbolTable));
         var d = document.createElement('div');
