@@ -4,8 +4,6 @@
 -Control Flow (ifs, loops)
 */
 
-//if it returns -1 that's bad somehow
-
 const G = {
   symbolTable: {},
   posList: [],
@@ -15,8 +13,7 @@ const G = {
   positionStack: [],
   nodes: {},
   PC: 0,
-  currentUUID: null,
-  counter: 0
+  currentUUID: null
 };
 
 function reset() {
@@ -29,7 +26,6 @@ function reset() {
   G.nodes = {};
   G.PC = 0;
   G.currentUUID = null;
-  G.counter = 0;
 }
 
 function start(body, highlight=false) {
@@ -46,7 +42,6 @@ function start(body, highlight=false) {
       entry['params'] = params;
       entry['body'] = body;
       entry['id'] = expression.uid;
-    //  G.symbolTable[name] = {params: params, body: body};
       G.symbolTable[name] = entry;
     }
   }
@@ -58,9 +53,7 @@ function eval(body, highlight=false) {
   var result = undefined;
   G.PC = 0;
   while (keepGoing) {
-    G.counter +=1;
     var expression = body[G.PC];
-  //  console.log('current UID' + G.currentUUID);
     var newResult = evalParsedJS(expression, highlight);
     if (newResult !== undefined) {
       result = newResult;
@@ -68,21 +61,15 @@ function eval(body, highlight=false) {
     G.PC++;
     if (body[G.PC] && expression.type !== esprima.Syntax.ReturnStatement) {
       //keep going
-    } /*else if (expression.type === esprima.Syntax.WhileStatement) {
-      console.log('here?');
-      break;} */
-       else {
+    } else {
       //this body is finished but there could be one on the stack
       var pos = G.positionStack.pop();
       console.log("Finished body and here's popped pos: " + JSON.stringify(pos));
       console.log("here's the body: " + JSON.stringify(body));
-      //pop the last place you were at off, this will give you a uid
-      // of the body you need to start evaluating
-      // that will change current uid to that one
       if (pos) {
         console.log('popped successfully');
         console.log(JSON.stringify(pos));
-        const uuid = Object.keys(pos)[0]; //uuid
+        const uuid = Object.keys(pos)[0];
         G.currentUUID = uuid;
         G.PC = pos[uuid];
         body = G.nodes[uuid];
@@ -127,7 +114,6 @@ function evalParsedJS(input, highlight=false) {
       if (highlight) {
         highlightJS(input.declarations[0].id.loc);
       }
-      console.log('declared: ' + input.declarations[0].id.name);
       const val = evalParsedJS(input.declarations[0].init, highlight);
       put(input.declarations[0].id.name, val);
       break;
@@ -140,7 +126,6 @@ function evalParsedJS(input, highlight=false) {
       }
       const left = evalParsedJS(input.left, highlight);
       const right = evalParsedJS(input.right, highlight);
-      //console.log(input.operator,left, right);
       return binExpEval(left, right, input.operator);
 
     case esprima.Syntax.AssignmentExpression:
@@ -177,7 +162,6 @@ function evalParsedJS(input, highlight=false) {
         entry['body'] = body;
         entry['id'] = expression.uid;
         G.symbolTable[name] = entry;
-      //  G.symbolTable[name] = {params : params, body : body};
       }
       break;
 
@@ -193,12 +177,7 @@ function evalParsedJS(input, highlight=false) {
         const params = getValue(callee).params;
         const id = getValue(callee).id;
         bindVals(params, argVals);
-        var pos = {};
-        pos[G.currentUUID] = G.PC + 1; //what if this goes off the end?
-        G.currentUUID = id;
-        G.positionStack.push(pos);
-        console.log("CALL PUSHED: " + JSON.stringify(pos));
-        console.log("calling eval from CallExpression");
+        pushPosition(id);
         return eval(body, highlight);
       } else {
         return -1;
@@ -214,21 +193,13 @@ function evalParsedJS(input, highlight=false) {
         if (!input.consequent.uid) {
             addNode(input.consequent);
         }
-        var pos = {};
-        pos[G.currentUUID] = G.PC+1;
-        G.positionStack.push(pos);
-        G.currentUUID = input.consequent.uid;
-        console.log('calling eval from if-then expression');
+        pushPosition(input.consequent.uid);
         return eval(then.body, highlight);
       } else if (input.alternate !== null) {
           if (!input.alternate.uid) {
             addNode(input.alternate);
           }
-          var pos = {};
-          pos[G.currentUUID] = G.PC+1;
-          G.positionStack.push(pos);
-          G.currentUUID = input.alternate.uid;
-        console.log('calling eval from if-else expression');
+          pushPosition(input.alternate.uid);
           return eval(alternate.body, highlight);
         }
       break;
@@ -241,29 +212,15 @@ function evalParsedJS(input, highlight=false) {
       }
 
       if (evalParsedJS(condition)) {
-        console.log('calling eval from while statement');
-        var pos = {};
-        pos[input.uid] = 0;
-        G.positionStack.push(pos);
-        G.currentUUID = input.uid;
+        pushPosition(input.uid, whileStatement=true);
         var result = eval(inBody.body, highlight);
       }
-    /*  while (evalParsedJS(condition)) {// && G.counter < 25) {
-        console.log('calling eval from while statement');
-        var pos = {};
-        pos[inBody.body.uid] = 0; //what if this goes off the end?
-      //  G.currentUUID = id;
-        G.positionStack.push(pos);
-        console.log("PUSHED WHILE POS");
-        var result = eval(inBody.body, highlight);
-      }*/
       return result;
 
     case esprima.Syntax.BlockStatement:
       return evalParsedJS(input.body);
 
     case esprima.Syntax.ReturnStatement:
-      console.log('ret');
       if (highlight) {
         highlightJS(input.loc);
         highlightJS(input.argument.loc);
@@ -275,7 +232,6 @@ function evalParsedJS(input, highlight=false) {
 
 //This will take FunctionDeclaration, WhileStatement, IfStatement, ?
 function addNode(node) {
-  //console.log('node: ' + JSON.stringify(node));
   const uuid = guid();
   node.uid = uuid;
   if (node.type === esprima.Syntax.WhileStatement) {
@@ -285,6 +241,16 @@ function addNode(node) {
   }
 }
 
+function pushPosition(uuid, whileStatement=false) {
+  var pos = {};
+  if (whileStatement) {
+    pos[uuid] = 0;
+  } else {
+    pos[G.currentUUID] = G.PC + 1;
+  }
+  G.positionStack.push(pos);
+  G.currentUUID = uuid;
+}
 
 
 function highlightJS(position) {
