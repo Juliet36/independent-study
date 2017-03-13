@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <title>Interpreter Test</title>
+  <style type="text/css" media="screen">
+    body {
+      margin: 0;
+    }
+    .test {
+      background: lightgray;
+      display: inline;
+      padding: 10px;
+      margin: 15px;
+      cursor: pointer;
+      border-radius: 6px;
+    }
+    .test:hover {
+      background: gray;
+    }
+    #editor {
+      margin-bottom: 15px;
+      height: 300px;
+      margin-left: 15px;
+      margin-right: 15px;
+    }
+    #answer {
+      padding: 20px;
+      margin-top:15px;
+      background: darkgray;
+      margin-left: 15px;
+      margin-right: 15px;
+      height: 20px;
+    }
+    #error {
+      padding: 10px;
+      margin-top:15px;
+      background: pink;
+      margin-left: 15px;
+      margin-right: 15px;
+      height: 20px;
+    }
+    </style>
+  </head>
+  <body>
+    <div id="editor">function ulam(x) {
+    if (x % 2 === 0) {
+        return x / 2;
+    } else {
+        return 3 * x + 1;
+    }
+}
+function ulamIter(y) {
+    var i = 0;
+    while (y > 1) {
+        y = ulam(y);
+        i = i + 1;
+    }
+    return i;
+}
+ulamIter(3);</div>
+
+    <div class ="test" id='run'>Run</div>
+    <div class ="test" id='step'>Highlight Step</div>
+    <div id="answer"></div>
+    <div id="error"></div>
+    <script src="./ace_stuff/ace.js"></script>
+    <script src="https://unpkg.com/esprima@~3.1/dist/esprima.js"></script>
+    <script src="./interpreter/js-evaluator.js"></script>
+    <script src="./error-handling.js"></script>
+    <script>
+      var editor = ace.edit("editor");
+
+      editor.setTheme("ace/theme/monokai");
+      editor.getSession().setMode("ace/mode/javascript");
+      editor.$blockScrolling = Infinity;
+
+      //make it work with the new stuff
+      const stepButton = document.querySelector('.test#step');
+      stepButton.addEventListener('click', function() {
+        if (!G.highlighting) {
+          G.highlighting = true;
+          G.tPos = 0;
+          const cd = editor.getValue();
+          const parsedCode = esprima.parse(cd, {loc:true});
+          G.tokens.length = 0;
+          G.tokensRanges.length = 0;
+          G.tokens = esprima.tokenize(cd, {loc: true});
+          start(parsedCode.body, true);
+        } else {
+          G.tPos += 1;
+        }
+        if (!G.tokensRanges[G.tPos]) {
+          G.highlighting = false;
+        } else {
+          editor.selection.setRange(G.tokensRanges[G.tPos]);
+        }
+      });
+
+      //This will run when the text in the ACE editor is changed
+      editor.getSession().on('change', function(e) {
+        G.highlighting = false;
+      });
+
+      const button = document.querySelector('.test#run');
+      button.addEventListener('click', function () {
+        const code = editor.getValue();
+        const tokens = esprima.tokenize(code, {loc: true});
+        resetSyntax();
+        var syntaxError = checkTokens(tokens);
+        if (syntaxError) {
+          const location = syntaxError.loc;
+          if (syntaxError.else) {
+            var errorElement = document.getElementById('error');
+            errorElement.innerHTML = "You'll need a curly brace to close this 'if'";
+            const startLine = token.if.loc.start.line-1;
+            const startCol = token.if.loc.start.column;
+            const endLine = token.else.loc.start.line-1;
+            const endCol = token.else.loc.start.column;
+            const range = {start: {row: startLine,
+                                 column: startCol},
+                         end: {row: endLine,
+                               column:endCol}
+                        };
+          editor.selection.setRange(range);
+          } else {
+            const startLine = location.start.line-1;
+            const startCol = location.start.column;
+            const endLine = tokens[tokens.length-1].loc.end.line-1;
+            const endCol = tokens[tokens.length-1].loc.end.column;
+            const range = {start: {row: startLine,
+                                 column: startCol},
+                         end: {row: endLine,
+                               column:endCol}
+                        };
+          editor.selection.setRange(range);
+          var errorElement = document.getElementById('error');
+          errorElement.innerHTML = "Be careful to close all curly braces and parentheses!";
+          }
+        } else {
+          const parsedCode = esprima.parse(code);
+          reset();
+          const result = start(parsedCode.body);
+          console.log("Result " + JSON.stringify(result));
+          console.log("World " + JSON.stringify(G.symbolTable));
+          var answerElement = document.getElementById('answer');
+          if (result || result === 0) {
+            answerElement.innerHTML = result;
+          } else {
+            answerElement.innerHTML = "";
+          }
+          var errorElement = document.getElementById('error');
+          errorElement.innerHTML = "";
+        }
+      });
+    </script>
+  </body>
+</html>

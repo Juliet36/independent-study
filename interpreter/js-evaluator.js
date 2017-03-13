@@ -1,7 +1,5 @@
 /* Not Implemented
 -Arrays
--Conditionals
--Control Flow (ifs, loops)
 */
 
 const G = {
@@ -13,7 +11,10 @@ const G = {
   positionStack: [],
   nodes: {},
   PC: 0,
-  currentUUID: null
+  currentUUID: null,
+  justCalled: false,
+  varDecJustCalled: false,
+  PCs: []
 };
 
 function reset() {
@@ -26,18 +27,20 @@ function reset() {
   G.nodes = {};
   G.PC = 0;
   G.currentUUID = null;
+  G.justCalled = false;
+  G.varDecJustCalled = false;
+  G.PCs= [];
 }
 
 function start(body, highlight=false) {
   addNode(body);
   G.currentUUID = body.uid;
-  console.log("Starting overall uid: " + G.currentUUID);
   for (expression of body) {
     if (expression.type === esprima.Syntax.FunctionDeclaration) {
       const name = expression.id.name;
       const params = expression.params.map(x => x.name);
       const body = expression.body.body;
-      addNode(expression);
+      addNode(body);
       var entry = {};
       entry['params'] = params;
       entry['body'] = body;
@@ -53,6 +56,7 @@ function eval(body, highlight=false) {
   var result = undefined;
   G.PC = 0;
   while (keepGoing) {
+    G.counter ++;
     var expression = body[G.PC];
     var newResult = evalParsedJS(expression, highlight);
     if (newResult !== undefined) {
@@ -61,27 +65,32 @@ function eval(body, highlight=false) {
     G.PC++;
     if (body[G.PC] && expression.type !== esprima.Syntax.ReturnStatement) {
       //keep going
-    } else {
+    }
+    else {
+      if ((G.justCalled || G.varDecJustCalled)&& expression.type === esprima.Syntax.ReturnStatement) {
+        G.justCalled = false;
+        if (G.varDecJustCalled) {
+          G.PC = G.PCs.pop();
+        }
+        G.varDecJustCalled = false;
+        break;
+      }
       //this body is finished but there could be one on the stack
       var pos = G.positionStack.pop();
-      console.log("Finished body and here's popped pos: " + JSON.stringify(pos));
-      console.log("here's the body: " + JSON.stringify(body));
       if (pos) {
-        console.log('popped successfully');
-        console.log(JSON.stringify(pos));
         const uuid = Object.keys(pos)[0];
         G.currentUUID = uuid;
         G.PC = pos[uuid];
         body = G.nodes[uuid];
-        if (!body[G.PC]) {
-          keepGoing = false;
+        if (expression.type === esprima.Syntax.ReturnStatement || !body[G.PC]) {
+          keepGoing=false;
         }
       } else {
         keepGoing = false;
       }
     }
   }
-    return result;
+  return result;
 }
 
 function evalParsedJS(input, highlight=false) {
@@ -114,6 +123,10 @@ function evalParsedJS(input, highlight=false) {
       if (highlight) {
         highlightJS(input.declarations[0].id.loc);
       }
+      if (input.declarations[0].init.type === esprima.Syntax.CallExpression) {
+        G.varDecJustCalled = true;
+        G.PCs.push(G.PC);
+      }
       const val = evalParsedJS(input.declarations[0].init, highlight);
       put(input.declarations[0].id.name, val);
       break;
@@ -134,6 +147,9 @@ function evalParsedJS(input, highlight=false) {
         if (highlight) {
           highlightJS(input.left.loc);
         }
+        if (input.right.type === esprima.Syntax.CallExpression) {
+          G.justCalled = true;
+        }
         const right = evalParsedJS(input.right, highlight);
         put(input.left.name, right);
         break;
@@ -147,15 +163,14 @@ function evalParsedJS(input, highlight=false) {
         input.params.map(x => highlightJS(x.loc));
         highlightJS(input.body.loc);
       }
-      if (!input.uid) {
-        addNode(input);
+      if (!input.body.uid) {
+        addNode(input.body);
       }
       const name = input.id.name;
       if (!G.symbolTable[name]) { //for some reason
         const name = input.id.name;
         const params = input.params.map(x => x.name);
         const body = input.body.body; //the body is a BlockStatement, get body of that
-
         addNode(input);
         var entry = {};
         entry['params'] = params;
@@ -177,7 +192,7 @@ function evalParsedJS(input, highlight=false) {
         const params = getValue(callee).params;
         const id = getValue(callee).id;
         bindVals(params, argVals);
-        pushPosition(id);
+        pushPosition(body.uid);
         return eval(body, highlight);
       } else {
         return -1;
@@ -188,8 +203,7 @@ function evalParsedJS(input, highlight=false) {
       const test = input.test;
       const then = input.consequent; //BlockStatement
       const alternate = input.alternate; //BlockStatement
-
-      if (evalParsedJS(test)) {
+      if (evalParsedJS(test, highlight)) {
         if (!input.consequent.uid) {
             addNode(input.consequent);
         }
@@ -207,26 +221,30 @@ function evalParsedJS(input, highlight=false) {
     case esprima.Syntax.WhileStatement:
       const condition = input.test;
       const inBody = input.body;
-      if (!input.uid) {
-        addNode(input);
+      if (!inBody.body.uid) {
+        addNode(inBody.body);//Because it's a BlockStatement (right?)
       }
-
-      if (evalParsedJS(condition)) {
-        pushPosition(input.uid, whileStatement=true);
+      if (evalParsedJS(condition, highlight)) {
+        pushPosition(inBody.body.uid, whileStatement=true);
         var result = eval(inBody.body, highlight);
       }
       return result;
 
     case esprima.Syntax.BlockStatement:
-      return evalParsedJS(input.body);
+      return evalParsedJS(input.body, highlight);
 
     case esprima.Syntax.ReturnStatement:
       if (highlight) {
         highlightJS(input.loc);
         highlightJS(input.argument.loc);
       }
-      const arg = evalParsedJS(input.argument, highlight);
-      return arg;
+      //In case it is just return and doesn't have an arg
+      if (input.argument) {
+        const arg = evalParsedJS(input.argument, highlight);
+        return arg;
+      } else {
+        return;
+      }
   }
 }
 
@@ -234,20 +252,16 @@ function evalParsedJS(input, highlight=false) {
 function addNode(node) {
   const uuid = guid();
   node.uid = uuid;
-  if (node.type === esprima.Syntax.WhileStatement) {
-    G.nodes[uuid] = [node];
-  } else {
-    G.nodes[uuid] = node;
-  }
+  G.nodes[uuid] = node;
 }
 
 function pushPosition(uuid, whileStatement=false) {
   var pos = {};
-  if (whileStatement) {
-    pos[uuid] = 0;
-  } else {
-    pos[G.currentUUID] = G.PC + 1;
+  var PC = G.PC;
+  if (!whileStatement) {
+    PC += 1;
   }
+  pos[G.currentUUID] = PC;
   G.positionStack.push(pos);
   G.currentUUID = uuid;
 }
