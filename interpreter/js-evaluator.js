@@ -1,5 +1,5 @@
 /* Not Implemented
--Arrays
+-Scopes
 */
 
 const G = {
@@ -14,7 +14,9 @@ const G = {
   currentUUID: null,
   justCalled: false,
   varDecJustCalled: false,
-  PCs: []
+  PCs: [],
+  counter: 0,
+  more:0
 };
 
 function reset() {
@@ -30,6 +32,8 @@ function reset() {
   G.justCalled = false;
   G.varDecJustCalled = false;
   G.PCs= [];
+  G.counter = 0;
+  G.more=0;
 }
 
 function start(body, highlight=false) {
@@ -55,8 +59,8 @@ function eval(body, highlight=false) {
   var keepGoing = true;
   var result = undefined;
   G.PC = 0;
-  while (keepGoing) {
-    G.counter ++;
+  while (keepGoing && G.counter < 500) {
+    G.counter++;
     var expression = body[G.PC];
     var newResult = evalParsedJS(expression, highlight);
     if (newResult !== undefined) {
@@ -73,6 +77,13 @@ function eval(body, highlight=false) {
           G.PC = G.PCs.pop();
         }
         G.varDecJustCalled = false;
+        break;
+      } else if (G.justCalled) {
+        G.more++;
+      }
+      if (G.more > 0) {
+        G.more--;
+        G.positionStack.pop();
         break;
       }
       //this body is finished but there could be one on the stack
@@ -113,11 +124,31 @@ function evalParsedJS(input, highlight=false) {
         //variable undefined
       }
 
+    case esprima.Syntax.ArrayExpression:
+      const elements = input.elements;
+      const arr = elements.map(x => evalParsedJS(x, highlight));
+      return arr;
+
     case esprima.Syntax.ExpressionStatement:
       if (highlight) {
         highlightJS(input.expression.loc);
       }
       return evalParsedJS(input.expression, highlight);
+
+    case esprima.Syntax.MemberExpression:
+      if (input.computed) {
+        //ComputedMemberExpression
+        //array access like a[i]
+        const obj = evalParsedJS(input.object, highlight);
+        const property = evalParsedJS(input.property, highlight);
+        return {'object':obj, 'parsedProp':property};
+      } else {
+        //StaticMemberExpression
+        //array operations like push, pop, slice, length
+        const obj = evalParsedJS(input.object, highlight);
+        const property = input.property.name;//
+        return {'object':obj, 'prop':property};
+      }
 
     case esprima.Syntax.VariableDeclaration:
       if (highlight) {
@@ -128,7 +159,23 @@ function evalParsedJS(input, highlight=false) {
         G.PCs.push(G.PC);
       }
       const val = evalParsedJS(input.declarations[0].init, highlight);
-      put(input.declarations[0].id.name, val);
+      if (input.declarations[0].init.type === esprima.Syntax.MemberExpression) {
+        if (input.declarations[0].init.computed) {
+          //a[i]
+          var pp = val.parsedProp;
+          var o = val.object;
+          put(input.declarations[0].id.name, o[pp]);
+        } else {
+          //slice
+          if (val.prop) {
+            put(input.declarations[0].id.name, val.object.length); //don't assume
+          } else {
+            put(input.declarations[0].id.name, val);
+          }
+        }
+      } else {
+        put(input.declarations[0].id.name, val);
+      }
       break;
 
     case esprima.Syntax.BinaryExpression:
@@ -137,13 +184,47 @@ function evalParsedJS(input, highlight=false) {
         const opLoc = G.tokens.filter(x => x.value === input.operator);
         highlightJS(opLoc[0].loc);
       }
-      const left = evalParsedJS(input.left, highlight);
-      const right = evalParsedJS(input.right, highlight);
+      var left = evalParsedJS(input.left, highlight);
+      var right = evalParsedJS(input.right, highlight);
+      if (input.left.type === esprima.Syntax.MemberExpression) {
+        if (input.left.computed) {
+          //a[i]
+          var o = left.object;
+          var pp = left.parsedProp;
+          left = o[pp];
+        } else {
+          //length
+          if (left.prop === 'length') {
+            left = left.object.length;
+          } else {
+            //different property
+            return -4;
+          }
+        }
+      }
+      if (input.right.type === esprima.Syntax.MemberExpression) {
+        if (input.right.computed) {
+          //a[i]
+          var o = right.object;
+          var pp = right.parsedProp;
+          right = o[pp];
+        } else {
+          //length
+          if (right.prop === 'length') {
+            left = left.object.length;
+          } else {
+            //different property
+            return -4;
+          }
+        }
+      }
       return binExpEval(left, right, input.operator);
 
     case esprima.Syntax.AssignmentExpression:
       //this makes some assumptions
-      if (lookup(input.left.name) || lookup(input.left.name) === 0) {
+      if (lookup(input.left.name)
+          || lookup(input.left.name) === 0
+          || input.left.type === esprima.Syntax.MemberExpression) {
         if (highlight) {
           highlightJS(input.left.loc);
         }
@@ -151,12 +232,36 @@ function evalParsedJS(input, highlight=false) {
           G.justCalled = true;
         }
         const right = evalParsedJS(input.right, highlight);
-        put(input.left.name, right);
+        if (input.left.type === esprima.Syntax.MemberExpression) {
+          // a[i] = input.right;
+          const left = evalParsedJS(input.left, highlight);
+          var pp = left.parsedProp;
+          var o = left.object;
+          o[pp] = right;
+          break;
+        } else if (input.right.type === esprima.Syntax.MemberExpression) {
+          // input.left = a[i] || length
+          if (input.right.computed) {
+            //a[i]
+            var pp = right.parsedProp;
+            var o = right.object;
+            put(input.left.name, o[pp]);
+          } else {
+            if (right.prop) {
+              //length
+              put(input.left.name, right.object.length); //don't assume
+            } //slice except not
+          }
+        } else {
+          put(input.left.name, right);
+        }
         break;
       } else {
-        //this means the variable hasn't been defined
+        //this means the variable hasn't been defined, strict now, don't allow variables without var
         return -3; //change
       }
+      break;
+
     case esprima.Syntax.FunctionDeclaration:
       if (highlight) {
         highlightJS(input.id.loc);
@@ -184,20 +289,48 @@ function evalParsedJS(input, highlight=false) {
       if (highlight) {
         highlightJS(input.callee.loc);
       }
-      const callee = input.callee.name;
-      const argVals = input.arguments.map(x => evalParsedJS(x, highlight));
-      //bind arguments and values
-      if (lookup(callee)) {
-        const body = getValue(callee).body;
-        const params = getValue(callee).params;
-        const id = getValue(callee).id;
-        bindVals(params, argVals);
-        pushPosition(body.uid);
-        return eval(body, highlight);
+      if (input.callee.type === esprima.Syntax.Identifier) {
+        const callee = input.callee.name;
+        const argVals = input.arguments.map(x => evalParsedJS(x, highlight));
+        //bind arguments and values
+        if (lookup(callee)) {
+          const body = getValue(callee).body;
+          const params = getValue(callee).params;
+          const id = getValue(callee).id;
+          bindVals(params, argVals);
+          pushPosition(body.uid);
+          return eval(body, highlight);
+        } else {
+          return -1;
+          //function hasn't been defined
+        }
       } else {
-        return -1;
-        //function hasn't been defined
+        //its type is MemberExpression
+        const objProp = evalParsedJS(input.callee, highlight);
+        const obj = objProp.object;
+        const prop = objProp.prop;
+        if (input.arguments.length > 0) {
+          if (input.arguments[0].type === esprima.Syntax.CallExpression) {
+            G.justCalled = true;
+          }
+          const args = input.arguments.map(x => evalParsedJS(x, highlight));
+          if (prop === "push") {
+            obj.push(args[0]);
+            break;
+          } else if (prop === "slice") {
+            return obj.slice(args[0], args[1]);
+          }
+        } else {
+          //pop(), length
+          if (prop === 'pop') {
+            return obj.pop();
+          } else if (prop === 'length') {
+            return obj.length;
+          }
+        }
+
       }
+      break;
 
     case esprima.Syntax.IfStatement:
       const test = input.test;
