@@ -11,12 +11,9 @@ const G = {
   positionStack: [],
   nodes: {},
   PC: 0,
+  PCs: [],
   currentUUID: null,
   justCalled: false,
-  varDecJustCalled: false,
-  PCs: [],
-  counter: 0,
-  more:0
 };
 
 function reset() {
@@ -28,12 +25,9 @@ function reset() {
   G.positionStack = [];
   G.nodes = {};
   G.PC = 0;
+  G.PCs = [];
   G.currentUUID = null;
   G.justCalled = false;
-  G.varDecJustCalled = false;
-  G.PCs= [];
-  G.counter = 0;
-  G.more=0;
 }
 
 function start(body, highlight=false) {
@@ -59,8 +53,7 @@ function eval(body, highlight=false) {
   var keepGoing = true;
   var result = undefined;
   G.PC = 0;
-  while (keepGoing && G.counter < 500) {
-    G.counter++;
+  while (keepGoing) {
     var expression = body[G.PC];
     var newResult = evalParsedJS(expression, highlight);
     if (newResult !== undefined) {
@@ -71,21 +64,18 @@ function eval(body, highlight=false) {
       //keep going
     }
     else {
-      if ((G.justCalled || G.varDecJustCalled)&& expression.type === esprima.Syntax.ReturnStatement) {
+     if (G.justCalled) {
         G.justCalled = false;
-        if (G.varDecJustCalled) {
-          G.PC = G.PCs.pop();
+        break;
+      }
+      if (expression.type === esprima.Syntax.ReturnStatement) {
+        if (G.positionStack.length >0) {
+          popUntilCall();
         }
-        G.varDecJustCalled = false;
-        break;
-      } else if (G.justCalled) {
-        G.more++;
-      }
-      if (G.more > 0) {
-        G.more--;
-        G.positionStack.pop();
+        G.justCalled = true;
         break;
       }
+
       //this body is finished but there could be one on the stack
       var pos = G.positionStack.pop();
       if (pos) {
@@ -113,6 +103,17 @@ function evalParsedJS(input, highlight=false) {
       }
       return input.value;
 
+    case esprima.Syntax.UnaryExpression:
+      if (highlight) {
+        highlightJS(input.loc); //???
+      }
+      if (input.operator === '-') {
+        var arg = evalParsedJS(input.argument, highlight);
+        return -arg;
+      } else {
+        return -6;
+      }
+
     case esprima.Syntax.Identifier:
       if (lookup(input.name) || lookup(input.name) === 0) {
         if (highlight) {
@@ -120,6 +121,7 @@ function evalParsedJS(input, highlight=false) {
         }
         return getValue(input.name);
       } else {
+        console.log('could not find ' + input.name);
         return -2; //change
         //variable undefined
       }
@@ -153,10 +155,6 @@ function evalParsedJS(input, highlight=false) {
     case esprima.Syntax.VariableDeclaration:
       if (highlight) {
         highlightJS(input.declarations[0].id.loc);
-      }
-      if (input.declarations[0].init.type === esprima.Syntax.CallExpression) {
-        G.varDecJustCalled = true;
-        G.PCs.push(G.PC);
       }
       const val = evalParsedJS(input.declarations[0].init, highlight);
       if (input.declarations[0].init.type === esprima.Syntax.MemberExpression) {
@@ -211,7 +209,7 @@ function evalParsedJS(input, highlight=false) {
         } else {
           //length
           if (right.prop === 'length') {
-            left = left.object.length;
+            right = right.object.length;
           } else {
             //different property
             return -4;
@@ -227,9 +225,6 @@ function evalParsedJS(input, highlight=false) {
           || input.left.type === esprima.Syntax.MemberExpression) {
         if (highlight) {
           highlightJS(input.left.loc);
-        }
-        if (input.right.type === esprima.Syntax.CallExpression) {
-          G.justCalled = true;
         }
         const right = evalParsedJS(input.right, highlight);
         if (input.left.type === esprima.Syntax.MemberExpression) {
@@ -299,6 +294,7 @@ function evalParsedJS(input, highlight=false) {
           const id = getValue(callee).id;
           bindVals(params, argVals);
           pushPosition(body.uid);
+          G.positionStack.push('call');
           return eval(body, highlight);
         } else {
           return -1;
@@ -310,9 +306,6 @@ function evalParsedJS(input, highlight=false) {
         const obj = objProp.object;
         const prop = objProp.prop;
         if (input.arguments.length > 0) {
-          if (input.arguments[0].type === esprima.Syntax.CallExpression) {
-            G.justCalled = true;
-          }
           const args = input.arguments.map(x => evalParsedJS(x, highlight));
           if (prop === "push") {
             obj.push(args[0]);
@@ -374,6 +367,7 @@ function evalParsedJS(input, highlight=false) {
       //In case it is just return and doesn't have an arg
       if (input.argument) {
         const arg = evalParsedJS(input.argument, highlight);
+        //check if arg is a call
         return arg;
       } else {
         return;
@@ -397,6 +391,16 @@ function pushPosition(uuid, whileStatement=false) {
   pos[G.currentUUID] = PC;
   G.positionStack.push(pos);
   G.currentUUID = uuid;
+}
+
+function popUntilCall() {
+  if (G.positionStack[G.positionStack.length-1] === 'call') {
+    G.positionStack.pop();
+    return;
+  } else {
+    G.positionStack.pop();
+    popUntilCall();
+  }
 }
 
 
