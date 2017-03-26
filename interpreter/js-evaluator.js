@@ -1,34 +1,50 @@
 /* Not Implemented
 -Scopes
 */
+const esprima = require('../node_modules/esprima');
 
 const G = {
   symbolTable: {},
-  posList: [],
-  highlightTable: {},
   tokensRanges: [],
   tokens: [],
   positionStack: [],
   nodes: {},
   PC: 0,
-  PCs: [],
-  currentUUID: null,
-  justCalled: false,
+  currentUUID: undefined,
+  body:undefined,
+  result:undefined,
+  justBroken: false,
+  popped: 0,
+  valid: true,
+  wait: false
 };
 
 function reset() {
   G.symbolTable = {};
-  G.posList = [];
-  G.highlightTable = {};
   G.tokensRanges = [];
-  G.tokens = [];
+  G.tokens = []; //define this?
   G.positionStack = [];
   G.nodes = {};
   G.PC = 0;
-  G.PCs = [];
-  G.currentUUID = null;
-  G.justCalled = false;
+  G.currentUUID = undefined;
+  G.body=undefined;
+  G.result=undefined;
+  G.justBroken = false;
+  G.popped = 0;
+  G.valid = true;
+  G.wait = false;
 }
+
+
+function run(code) {
+  const tokens = esprima.tokenize(code, {loc: true});
+  const parsedCode = esprima.parse(code);
+  reset();
+  const result = start(parsedCode.body);
+  console.log("Result " + JSON.stringify(result));
+  console.log("World " + JSON.stringify(G.symbolTable));
+}
+
 
 function start(body, highlight=false) {
   addNode(body);
@@ -46,53 +62,80 @@ function start(body, highlight=false) {
       G.symbolTable[name] = entry;
     }
   }
-  return eval(body, highlight);
+  G.body = body;
+  var res = eval(highlight);
+  if (G.positionStack.length > 0) {
+    console.log('BAD: stuff still on the stack');
+    console.log(JSON.stringify(G.positionStack));
+  }
+  return res;
 }
 
-function eval(body, highlight=false) {
-  var keepGoing = true;
-  var result = undefined;
-  G.PC = 0;
-  while (keepGoing) {
-    var expression = body[G.PC];
-    var newResult = evalParsedJS(expression, highlight);
-    if (newResult !== undefined) {
-      result = newResult;
+function eval(highlight=false) {
+  G.keepGoing = true;
+  while (G.keepGoing) {
+    if (G.popped > 1) {
+      G.popped--;
+      G.justBroken = true;
+      break;
     }
-    G.PC++;
-    if (body[G.PC] && expression.type !== esprima.Syntax.ReturnStatement) {
-      //keep going
-    }
-    else {
-     if (G.justCalled) {
-        G.justCalled = false;
-        break;
-      }
-      if (expression.type === esprima.Syntax.ReturnStatement) {
-        if (G.positionStack.length >0) {
-          popUntilCall();
+    if (G.justBroken) {
+      G.justBroken = false;
+      if (G.positionStack.length > 0) {
+        if (G.positionStack[G.positionStack.length-1] === 'call') {
+          G.positionStack.pop();
         }
-        G.justCalled = true;
-        break;
-      }
-
-      //this body is finished but there could be one on the stack
-      var pos = G.positionStack.pop();
-      if (pos) {
-        const uuid = Object.keys(pos)[0];
+        var pos = G.positionStack.pop();
+        var uuid = Object.keys(pos)[0];
         G.currentUUID = uuid;
         G.PC = pos[uuid];
-        body = G.nodes[uuid];
-        if (expression.type === esprima.Syntax.ReturnStatement || !body[G.PC]) {
-          keepGoing=false;
+        G.body = G.nodes[uuid];
+        G.valid = true;
+        /*
+        console.log('new pos: ' + "\n" +  JSON.stringify(pos));
+        console.log('new body: ' + "\n" +  JSON.stringify(G.body));
+        console.log('new exp: ' + "\n" +  JSON.stringify(G.body[G.PC]) + "\n");
+        */
+        return eval(highlight);
+      }
+    } else {
+      /*
+      console.log('attempted PC: ' + "\n" + G.PC);
+      console.log('attempted body: ' + "\n" + JSON.stringify(G.body));
+      console.log('attempted exp: ' + "\n" +  JSON.stringify(G.body[G.PC]) + "\n");
+      */
+      if (G.body[G.PC] && G.valid) {
+        var expression = G.body[G.PC];
+        var newResult = evalParsedJS(expression, highlight);
+        if (newResult !== undefined) {
+          G.result = newResult;
         }
+        if (expression.type === esprima.Syntax.ReturnStatement && G.positionStack.length > 0) {
+          if (G.wait) {
+            //this happens even if it's another type of call, but should be fine?
+            G.valid = false;
+            if (G.positionStack[G.positionStack.length-1] !== 'call') {
+              popUntilCall();
+            }
+          } else {
+            popUntilCall();
+          }
+        }
+        G.PC++;
       } else {
-        keepGoing = false;
+        if (!G.valid) {
+          G.wait = false;
+          G.valid = true;
+        }
+        G.justBroken = true;
+        break;
       }
     }
   }
-  return result;
+  return G.result;
 }
+
+
 
 function evalParsedJS(input, highlight=false) {
   var type = input.type;
@@ -104,25 +147,37 @@ function evalParsedJS(input, highlight=false) {
       return input.value;
 
     case esprima.Syntax.UnaryExpression:
-      if (highlight) {
+      if (highlight) { //highlight the unary symbol
         highlightJS(input.loc); //???
       }
       if (input.operator === '-') {
         var arg = evalParsedJS(input.argument, highlight);
         return -arg;
+      } else if (input.operator === '!') {
+        var arg = evalParsedJS(input.argument, highlight);
+        return !arg;
       } else {
         return -6;
       }
 
+    case esprima.Syntax.UpdateExpression:
+      if (highlight) { //highlight the update symbol
+        highlightJS(input.loc); //???
+      }
+      if (input.operator === '++') {
+        var arg = evalParsedJS(input.argument, highlight);
+        put(input.argument.name, arg+1);
+      }
+
     case esprima.Syntax.Identifier:
-      if (lookup(input.name) || lookup(input.name) === 0) {
+      if (lookup(input.name) || lookup(input.name) === 0 || lookup(input.name) === false || lookup(input.name) === "" || lookup(input.name) === null) {
         if (highlight) {
           highlightJS(input.loc);
         }
         return getValue(input.name);
       } else {
-        console.log('could not find ' + input.name);
-        return -2; //change
+        console.log('could not find: ' +  input.name + "\n");
+        return -2;
         //variable undefined
       }
 
@@ -158,23 +213,31 @@ function evalParsedJS(input, highlight=false) {
       }
       const val = evalParsedJS(input.declarations[0].init, highlight);
       if (input.declarations[0].init.type === esprima.Syntax.MemberExpression) {
-        if (input.declarations[0].init.computed) {
-          //a[i]
-          var pp = val.parsedProp;
-          var o = val.object;
-          put(input.declarations[0].id.name, o[pp]);
-        } else {
-          //slice
-          if (val.prop) {
-            put(input.declarations[0].id.name, val.object.length); //don't assume
-          } else {
-            put(input.declarations[0].id.name, val);
-          }
-        }
+        var memberResult = memberExpHandler(input.declarations[0].init, val);
+        put(input.declarations[0].id.name, memberResult);
       } else {
         put(input.declarations[0].id.name, val);
       }
       break;
+
+    case esprima.Syntax.LogicalExpression:
+      if (highlight) {
+        highlightJS(input.loc);
+        const opLoc = G.tokens.filter(x => x.value === input.operator);
+        highlightJS(opLoc[0].loc);
+      }
+      var left = evalParsedJS(input.left, highlight);
+      var right = evalParsedJS(input.right, highlight);
+      if (input.left.type === esprima.Syntax.MemberExpression) {
+        left = memberExpHandler(input.left, left);
+      }
+      if (input.right.type === esprima.Syntax.MemberExpression) {
+        right = memberExpHandler(input.right, right);
+      }
+      if (left === -4 || right === -4) {
+        return -4;
+      }
+      return logExpEval(left, right, input.operator);
 
     case esprima.Syntax.BinaryExpression:
       if (highlight) {
@@ -185,36 +248,13 @@ function evalParsedJS(input, highlight=false) {
       var left = evalParsedJS(input.left, highlight);
       var right = evalParsedJS(input.right, highlight);
       if (input.left.type === esprima.Syntax.MemberExpression) {
-        if (input.left.computed) {
-          //a[i]
-          var o = left.object;
-          var pp = left.parsedProp;
-          left = o[pp];
-        } else {
-          //length
-          if (left.prop === 'length') {
-            left = left.object.length;
-          } else {
-            //different property
-            return -4;
-          }
-        }
+        left = memberExpHandler(input.left, left);
       }
       if (input.right.type === esprima.Syntax.MemberExpression) {
-        if (input.right.computed) {
-          //a[i]
-          var o = right.object;
-          var pp = right.parsedProp;
-          right = o[pp];
-        } else {
-          //length
-          if (right.prop === 'length') {
-            right = right.object.length;
-          } else {
-            //different property
-            return -4;
-          }
-        }
+        right = memberExpHandler(input.right, right);
+      }
+      if (left === -4 || right === -4) {
+        return -4;
       }
       return binExpEval(left, right, input.operator);
 
@@ -222,38 +262,34 @@ function evalParsedJS(input, highlight=false) {
       //this makes some assumptions
       if (lookup(input.left.name)
           || lookup(input.left.name) === 0
+          || lookup(input.left.name) === false
+          || lookup(input.left.name) === ""
+          || lookup(input.left.name) === null
           || input.left.type === esprima.Syntax.MemberExpression) {
         if (highlight) {
           highlightJS(input.left.loc);
         }
         const right = evalParsedJS(input.right, highlight);
-        if (input.left.type === esprima.Syntax.MemberExpression) {
-          // a[i] = input.right;
-          const left = evalParsedJS(input.left, highlight);
-          var pp = left.parsedProp;
-          var o = left.object;
-          o[pp] = right;
-          break;
-        } else if (input.right.type === esprima.Syntax.MemberExpression) {
-          // input.left = a[i] || length
-          if (input.right.computed) {
-            //a[i]
-            var pp = right.parsedProp;
-            var o = right.object;
-            put(input.left.name, o[pp]);
-          } else {
-            if (right.prop) {
-              //length
-              put(input.left.name, right.object.length); //don't assume
-            } //slice except not
+        var rightResult = right;
+        if (input.right.type === esprima.Syntax.MemberExpression ||
+        input.left.type === esprima.Syntax.MemberExpression) {
+          if (input.right.type === esprima.Syntax.MemberExpression) {
+            rightResult = memberExpHandler(input.right, right);
           }
-        } else {
-          put(input.left.name, right);
+          if (input.left.type === esprima.Syntax.MemberExpression) {
+            const left = evalParsedJS(input.left, highlight);
+            var pp = left.parsedProp;
+            var o = left.object;
+            o[pp] = rightResult;
+            break;
+          }
         }
+        put(input.left.name, rightResult);
         break;
       } else {
         //this means the variable hasn't been defined, strict now, don't allow variables without var
-        return -3; //change
+        console.log('can not find: ' + input.left.name + ' for assignment');
+        return -3;
       }
       break;
 
@@ -295,8 +331,18 @@ function evalParsedJS(input, highlight=false) {
           bindVals(params, argVals);
           pushPosition(body.uid);
           G.positionStack.push('call');
-          return eval(body, highlight);
+          G.body = body;
+          G.PC = 0;
+          return eval(highlight);
+        } else if (callee === 'alert') {
+          alert(argVals);
+          break;
+        } else if (callee === 'prompt') {
+          return prompt(argVals);
+        } else if (callee === 'parseFloat') {
+          return parseFloat(argVals);
         } else {
+          console.log('Function: ' + callee + 'has not yet been defined');
           return -1;
           //function hasn't been defined
         }
@@ -312,13 +358,26 @@ function evalParsedJS(input, highlight=false) {
             break;
           } else if (prop === "slice") {
             return obj.slice(args[0], args[1]);
+          } else if (prop === 'charAt') {
+            return obj.charAt(args[0]); //args in general?
+          } else if (prop === 'floor') { //Math is not a variable
+            return Math.floor(args[0]); //args in general?
+          } else if (prop === 'log') { //console is not a variable
+            console.log(args);
+            break;
+          } else if (prop === 'fromCharCode') { //String is not a variable
+            return String.fromCharCode(args);
+          } else if (prop === 'charCodeAt') {
+            return obj.charCodeAt(args);
           }
         } else {
-          //pop(), length
+          //pop(), length, random
           if (prop === 'pop') {
             return obj.pop();
           } else if (prop === 'length') {
             return obj.length;
+          } else if (prop === 'random') {
+            return Math.random();
           }
         }
 
@@ -330,17 +389,25 @@ function evalParsedJS(input, highlight=false) {
       const then = input.consequent; //BlockStatement
       const alternate = input.alternate; //BlockStatement
       if (evalParsedJS(test, highlight)) {
-        if (!input.consequent.uid) {
-            addNode(input.consequent);
+        if (!input.consequent.body.uid) {
+            addNode(input.consequent.body);
         }
-        pushPosition(input.consequent.uid);
-        return eval(then.body, highlight);
+        pushPosition(input.consequent.body.uid);
+        G.body = then.body;
+        G.PC = 0;
+        return eval(highlight);
       } else if (input.alternate !== null) {
-          if (!input.alternate.uid) {
-            addNode(input.alternate);
+          if (alternate.type === esprima.Syntax.IfStatement) {
+            return evalParsedJS(alternate, highlight);
+          } else {
+            if (!input.alternate.body.uid) {
+              addNode(input.alternate.body);
+            }
+            pushPosition(input.alternate.body.uid);
+            G.body = alternate.body;
+            G.PC = 0;
+            return eval(highlight);
           }
-          pushPosition(input.alternate.uid);
-          return eval(alternate.body, highlight);
         }
       break;
 
@@ -352,9 +419,11 @@ function evalParsedJS(input, highlight=false) {
       }
       if (evalParsedJS(condition, highlight)) {
         pushPosition(inBody.body.uid, whileStatement=true);
-        var result = eval(inBody.body, highlight);
+        G.body = inBody.body;
+        G.PC = 0
+        return eval(highlight);
       }
-      return result;
+      break;
 
     case esprima.Syntax.BlockStatement:
       return evalParsedJS(input.body, highlight);
@@ -366,8 +435,10 @@ function evalParsedJS(input, highlight=false) {
       }
       //In case it is just return and doesn't have an arg
       if (input.argument) {
+        if (hasCall(input.argument)) {
+          G.wait = true;
+        }
         const arg = evalParsedJS(input.argument, highlight);
-        //check if arg is a call
         return arg;
       } else {
         return;
@@ -393,17 +464,6 @@ function pushPosition(uuid, whileStatement=false) {
   G.currentUUID = uuid;
 }
 
-function popUntilCall() {
-  if (G.positionStack[G.positionStack.length-1] === 'call') {
-    G.positionStack.pop();
-    return;
-  } else {
-    G.positionStack.pop();
-    popUntilCall();
-  }
-}
-
-
 function highlightJS(position) {
   const startLine = position.start.line-1;
   const startCol = position.start.column;
@@ -418,6 +478,7 @@ function highlightJS(position) {
 }
 
 function binExpEval(left, right, op) {
+//  console.log(left + " " + op + " " + right);
   switch (op) {
     case '+':
       return left + right;
@@ -444,11 +505,70 @@ function binExpEval(left, right, op) {
   }
 }
 
+function logExpEval(left, right, op) {
+//  console.log(left + " " + op + " " + right);
+  switch (op) {
+    case '&&':
+      return left && right;
+    case '||':
+      return left || right;
+  }
+}
+
+function memberExpHandler(memExpAST, memExpObj) {
+  if (memExpAST.computed) {
+    var pp = memExpObj.parsedProp;
+    var o = memExpObj.object;
+    return o[pp];
+  } else {
+    if (memExpObj.prop) {
+      if (memExpObj.prop === 'length') {
+        return memExpObj.object.length;
+      } else {
+        return -4;
+      }
+    } else {
+      return memExpObj;
+    }
+  }
+}
+
 function bindVals(params, argVals) {
-  for (p of params) for (a of argVals) G.symbolTable[p] = a;
+  var i = 0;
+  while (i < params.length) {
+    G.symbolTable[params[i]] = argVals[i];
+    i++;
+  }
+}
+
+function popUntilCall() {
+  if (G.positionStack[G.positionStack.length-1] === 'call') {
+    G.popped++;
+    G.positionStack.pop();
+    return;
+  } else {
+    G.popped++;
+    G.positionStack.pop();
+    popUntilCall();
+  }
+}
+
+function hasCall(arg) {
+  if (arg.type === esprima.Syntax.CallExpression) {
+   return true;
+  } else if (arg.type === esprima.Syntax.BinaryExpression ||
+  arg.type === esprima.Syntax.LogicalExpression) {
+    var l = hasCall(arg.left);
+    var r = hasCall(arg.right);
+    return l || r;
+  }
+  else {
+  return false;
+  }
 }
 
 function put(name, value) {
+//  console.log('put: ' + value + ' in: ' + name);
   G.symbolTable[name] = value;
 }
 
@@ -472,3 +592,6 @@ function s4() {
     .toString(16)
     .substring(1);
 }
+
+
+module.exports = {run};

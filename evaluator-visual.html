@@ -145,8 +145,10 @@ ulamIter(3);</div>
           console.log("Result " + JSON.stringify(result));
           console.log("World " + JSON.stringify(G.symbolTable));
           var answerElement = document.getElementById('answer');
-          if (result || result === 0) {
+          if (result || result === 0 || result === false) {
             answerElement.innerHTML = result;
+          } else if (result === null) {
+            answerElement.innerHTML = 'null';
           } else {
             answerElement.innerHTML = "";
           }
