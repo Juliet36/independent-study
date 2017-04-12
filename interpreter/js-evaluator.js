@@ -5,6 +5,7 @@ const esprima = require('../node_modules/esprima');
 
 const G = {
   symbolTable: {},
+  conditionVariables: {},
   tokensRanges: [],
   tokens: [],
   positionStack: [],
@@ -16,11 +17,13 @@ const G = {
   justBroken: false,
   popped: 0,
   valid: true,
-  wait: false
+  wait: false,
+  whileCondition: false
 };
 
 function reset() {
   G.symbolTable = {};
+  G.conditionVariables = {};
   G.tokensRanges = [];
   G.tokens = []; //define this?
   G.positionStack = [];
@@ -33,6 +36,7 @@ function reset() {
   G.popped = 0;
   G.valid = true;
   G.wait = false;
+  G.whileCondition = false;
 }
 
 
@@ -63,6 +67,7 @@ function start(body, highlight=false) {
     }
   }
   G.body = body;
+  G.keepGoing = true;
   var res = eval(highlight);
   if (G.positionStack.length > 0) {
     console.log('BAD: stuff still on the stack');
@@ -72,63 +77,47 @@ function start(body, highlight=false) {
 }
 
 function eval(highlight=false) {
-  G.keepGoing = true;
   while (G.keepGoing) {
-    if (G.popped > 1) {
-      G.popped--;
+  //  console.log("\nPC: " + G.PC + " UUID: " + G.currentUUID);
+    if (G.body["invalid"]) { //the bodies will have an invalid added in the invalidUntilCall
+    //  console.log('\nbreak because invalid body: ' + G.currentUUID);
+      popRestore();
+    //  console.log('\nafter restoring and before break, new UUID: ' + G.currentUUID);
       G.justBroken = true;
       break;
-    }
-    if (G.justBroken) {
-      G.justBroken = false;
-      if (G.positionStack.length > 0) {
-        if (G.positionStack[G.positionStack.length-1] === 'call') {
-          G.positionStack.pop();
-        }
-        var pos = G.positionStack.pop();
-        var uuid = Object.keys(pos)[0];
-        G.currentUUID = uuid;
-        G.PC = pos[uuid];
-        G.body = G.nodes[uuid];
-        G.valid = true;
-        /*
-        console.log('new pos: ' + "\n" +  JSON.stringify(pos));
-        console.log('new body: ' + "\n" +  JSON.stringify(G.body));
-        console.log('new exp: ' + "\n" +  JSON.stringify(G.body[G.PC]) + "\n");
-        */
-        return eval(highlight);
-      }
-    } else {
-      /*
-      console.log('attempted PC: ' + "\n" + G.PC);
-      console.log('attempted body: ' + "\n" + JSON.stringify(G.body));
-      console.log('attempted exp: ' + "\n" +  JSON.stringify(G.body[G.PC]) + "\n");
-      */
-      if (G.body[G.PC] && G.valid) {
-        var expression = G.body[G.PC];
-        var newResult = evalParsedJS(expression, highlight);
-        if (newResult !== undefined) {
-          G.result = newResult;
-        }
-        if (expression.type === esprima.Syntax.ReturnStatement && G.positionStack.length > 0) {
-          if (G.wait) {
-            //this happens even if it's another type of call, but should be fine?
-            G.valid = false;
-            if (G.positionStack[G.positionStack.length-1] !== 'call') {
-              popUntilCall();
-            }
-          } else {
-            popUntilCall();
-          }
-        }
-        G.PC++;
-      } else {
-        if (!G.valid) {
-          G.wait = false;
-          G.valid = true;
-        }
+    } else if (G.PC >= G.body.length) {
+    //  console.log('\nbreak because program counter off end of body: ' + G.currentUUID);
+      if (G.positionStack.length === 0) {
+    //    console.log('\nand nothing to popRestore');
         G.justBroken = true;
         break;
+      }
+      popRestore();
+    //  console.log('\nafter restoring, before break, UUID: ' + G.currentUUID);
+      G.justBroken = true;
+      break;
+    } else if (G.body[G.PC]) {
+    //  console.log('\nvalid expression: ' + G.currentUUID);
+      var expression = G.body[G.PC];
+      var newResult = evalParsedJS(expression, highlight);
+      if (newResult !== undefined) {
+        G.result = newResult;
+      }
+      if (expression.type === esprima.Syntax.ReturnStatement) {
+  //      console.log('\nb4 invalid: ' + JSON.stringify(G.positionStack));
+        invalidUntilCall(G.positionStack.length-1);
+  //      console.log('\nafter invalid: ' + JSON.stringify(G.positionStack));
+        popRestore();
+        G.justBroken = true;
+        break;//?
+      }
+    //  console.log('\nbody is valid: ' + G.currentUUID + " " + G.justBroken + " " + G.body['invalid']);
+      if (G.justBroken) {
+    //    console.log('\ndo not increment counter');
+        G.justBroken = false;
+      } else {
+    //    console.log('\nincrement counter: ' + G.currentUUID);
+        G.PC++;
       }
     }
   }
@@ -173,6 +162,9 @@ function evalParsedJS(input, highlight=false) {
       if (lookup(input.name) || lookup(input.name) === 0 || lookup(input.name) === false || lookup(input.name) === "" || lookup(input.name) === null) {
         if (highlight) {
           highlightJS(input.loc);
+        }
+        if (G.whileCondition) {
+          G.conditionVariables[input.name] = getValue(input.name);
         }
         return getValue(input.name);
       } else {
@@ -329,11 +321,20 @@ function evalParsedJS(input, highlight=false) {
           const params = getValue(callee).params;
           const id = getValue(callee).id;
           bindVals(params, argVals);
+          if (body["invalid"]) {
+            //console.log('ever?');
+            body["invalid"] = false;
+          }
           pushPosition(body.uid);
           G.positionStack.push('call');
+          //console.log("CALL: " + JSON.stringify(G.positionStack));
           G.body = body;
           G.PC = 0;
-          return eval(highlight);
+          G.keepGoing = true;
+          var calret = eval(highlight);
+          //console.log('FINISHED CALL: ' + calret);
+          return calret;
+        //  return eval(highlight);
         } else if (callee === 'alert') {
           alert(argVals);
           break;
@@ -341,6 +342,8 @@ function evalParsedJS(input, highlight=false) {
           return prompt(argVals);
         } else if (callee === 'parseFloat') {
           return parseFloat(argVals);
+        } else if (callee === 'isNaN') {
+          return isNaN(argVals);
         } else {
           console.log('Function: ' + callee + 'has not yet been defined');
           return -1;
@@ -395,6 +398,7 @@ function evalParsedJS(input, highlight=false) {
         pushPosition(input.consequent.body.uid);
         G.body = then.body;
         G.PC = 0;
+        G.keepGoing = true;
         return eval(highlight);
       } else if (input.alternate !== null) {
           if (alternate.type === esprima.Syntax.IfStatement) {
@@ -406,6 +410,7 @@ function evalParsedJS(input, highlight=false) {
             pushPosition(input.alternate.body.uid);
             G.body = alternate.body;
             G.PC = 0;
+            G.keepGoing = true;
             return eval(highlight);
           }
         }
@@ -417,10 +422,14 @@ function evalParsedJS(input, highlight=false) {
       if (!inBody.body.uid) {
         addNode(inBody.body);//Because it's a BlockStatement (right?)
       }
-      if (evalParsedJS(condition, highlight)) {
+      G.whileCondition = true;
+      var parsedWhile = evalParsedJS(condition, highlight);
+      G.whileCondition = false;
+      if (parsedWhile) {
         pushPosition(inBody.body.uid, whileStatement=true);
         G.body = inBody.body;
         G.PC = 0
+        G.keepGoing = true;
         return eval(highlight);
       }
       break;
@@ -438,7 +447,10 @@ function evalParsedJS(input, highlight=false) {
         if (hasCall(input.argument)) {
           G.wait = true;
         }
+        G.sameReturn = true;
         const arg = evalParsedJS(input.argument, highlight);
+      //  console.log('return arg: ' + arg);
+        G.sameReturn = false;
         return arg;
       } else {
         return;
@@ -456,12 +468,14 @@ function addNode(node) {
 function pushPosition(uuid, whileStatement=false) {
   var pos = {};
   var PC = G.PC;
-  if (!whileStatement) {
+  if (!whileStatement && G.lastPop !== G.currentUUID) {
     PC += 1;
   }
   pos[G.currentUUID] = PC;
+  pos["keepGoing"] = G.keepGoing;
   G.positionStack.push(pos);
   G.currentUUID = uuid;
+//  console.log('pushed: ' + JSON.stringify(pos));
 }
 
 function highlightJS(position) {
@@ -478,7 +492,7 @@ function highlightJS(position) {
 }
 
 function binExpEval(left, right, op) {
-//  console.log(left + " " + op + " " + right);
+  //console.log(left + " " + op + " " + right);
   switch (op) {
     case '+':
       return left + right;
@@ -541,15 +555,33 @@ function bindVals(params, argVals) {
   }
 }
 
-function popUntilCall() {
-  if (G.positionStack[G.positionStack.length-1] === 'call') {
-    G.popped++;
-    G.positionStack.pop();
-    return;
+function popRestore() {
+  var pos = G.positionStack.pop();
+  G.lastPop = Object.keys(pos)[0];
+  if (pos !== 'call') {
+    var uuid = Object.keys(pos)[0];
+    G.currentUUID = uuid;
+    G.PC = pos[uuid];
+    G.body = G.nodes[uuid];
+    G.keepGoing = pos["keepGoing"];
+  //  console.log('\nrestored: ' + G.currentUUID + ' PC: ' + G.PC);
+    return G.body;
   } else {
-    G.popped++;
-    G.positionStack.pop();
-    popUntilCall();
+    //shouldn't happen
+    console.log('else case in popRestore');
+  }
+}
+
+function invalidUntilCall(i) {
+  if (G.positionStack[i] === 'call') {
+    G.positionStack.splice(i,1);
+    return G.positionStack;
+  } else {
+    var uuid = Object.keys(G.positionStack[i])[0];
+    var body = G.nodes[uuid];
+    body["invalid"] = true;
+  //  console.log('\nmade body invalid: ' + JSON.stringify(body) + '\n');
+    return invalidUntilCall(i-1);
   }
 }
 
